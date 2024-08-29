@@ -88,7 +88,7 @@ impl LaunchBuilder {
     #[cfg_attr(docsrs, doc(cfg(feature = "desktop")))]
     pub fn desktop_from_window() -> LaunchBuilder<dioxus_desktop::Config, UnsendContext> {
         LaunchBuilder {
-            launch_fn: |root, contexts, cfg| dioxus_desktop::launch::launch_from_window(root, contexts),
+            launch_fn: |root, contexts, cfg| dioxus_desktop::launch::launch_from_window(root, contexts, cfg),
             contexts: Vec::new(),
             platform_config: None,
         }

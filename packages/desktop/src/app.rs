@@ -101,7 +101,7 @@ impl App {
         (event_loop, app)
     }
 
-    pub fn new_from_window(virtual_dom: VirtualDom) -> (EventLoop<UserWindowEvent>, Self) {
+    pub fn new_from_window(cfg: Config, virtual_dom: VirtualDom) -> (EventLoop<UserWindowEvent>, Self) {
         let event_loop = EventLoopBuilder::<UserWindowEvent>::with_user_event().build();
 
         let app = Self {
@@ -112,7 +112,7 @@ impl App {
             unmounted_dom: Cell::new(Some(virtual_dom)),
             float_all: !cfg!(debug_assertions),
             show_devtools: false,
-            cfg: Cell::new(Some(Config::default())),
+            cfg: Cell::new(Some(cfg)),
             shared: Rc::new(SharedContext {
                 event_handlers: WindowEventHandlers::default(),
                 pending_webviews: Default::default(),

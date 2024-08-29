@@ -6,7 +6,7 @@ use crate::{
     file_upload::NativeFileHover, ipc::UserWindowEvent, protocol, waker::tao_waker, Config,
     DesktopContext, DesktopService,
 };
-use dioxus_core::{Runtime, ScopeId, VirtualDom};
+use dioxus_core::{AnyValue, Runtime, ScopeId, VirtualDom};
 use dioxus_hooks::to_owned;
 use dioxus_html::document::Document;
 use dioxus_html::native_bind::NativeFileEngine;
@@ -16,10 +16,10 @@ use futures_util::{pin_mut, FutureExt};
 use std::cell::OnceCell;
 use std::sync::Arc;
 use std::{rc::Rc, task::Waker};
-use gtk::prelude::WidgetExt;
+use gtk::prelude::{ContainerExt, GtkWindowExt, WidgetExt};
 use gtk_layer_shell::LayerShell;
 use tao::event_loop;
-use tao::event_loop::EventLoop;
+use tao::event_loop::{EventLoop, EventLoopWindowTarget};
 use tao::platform::unix::{EventLoopWindowTargetExtUnix, WindowExtUnix};
 use tao::window::Window;
 use wry::{RequestAsyncResponder, WebContext, WebViewBuilder};
@@ -166,7 +166,7 @@ impl WebviewInstance {
                     460,
                     460,
                 )
-                .expect("image parse failed"),
+                    .expect("image parse failed"),
             ));
         }
 
@@ -359,13 +359,32 @@ impl WebviewInstance {
     }
 
 
-    pub(crate) fn new_with_window2<F:Fn(EventLoop<UserWindowEvent>)->Window>(
+    pub(crate) fn new_with_window2<F: Fn(&EventLoopWindowTarget<UserWindowEvent>) -> (Window, Rc<gtk::Box>)>(
         mut cfg: Config,
         dom: VirtualDom,
         shared: Rc<SharedContext>,
         window_builder: F,
     ) -> WebviewInstance {
-        let window = window_builder(event_loop::EventLoopBuilder::<UserWindowEvent>::with_user_event().build());
+        let mut window = cfg.window.clone();
+
+        // tao makes small windows for some reason, make them bigger
+        if cfg.window.window.inner_size.is_none() {
+            window = window.with_inner_size(tao::dpi::LogicalSize::new(800.0, 600.0));
+        }
+
+        // We assume that if the icon is None in cfg, then the user just didnt set it
+        if cfg.window.window.window_icon.is_none() {
+            window = window.with_window_icon(Some(
+                tao::window::Icon::from_rgba(
+                    include_bytes!("./assets/default_icon.bin").to_vec(),
+                    460,
+                    460,
+                )
+                    .expect("image parse failed"),
+            ));
+        }
+        println!("COUCOU2");
+        let (window, defaultBox) = window_builder(&shared.target);
         // https://developer.apple.com/documentation/appkit/nswindowcollectionbehavior/nswindowcollectionbehaviormanaged
         #[cfg(target_os = "macos")]
         {
@@ -388,11 +407,11 @@ impl WebviewInstance {
         let headless = !cfg.window.window.visible;
 
         let request_handler = {
-                let custom_head = cfg.custom_head.clone();
-                let custom_index = cfg.custom_index.clone();
-                let root_name = cfg.root_name.clone();
-                let asset_handlers = asset_handlers.clone();
-                let edits = edits.clone();
+            let custom_head = cfg.custom_head.clone();
+            let custom_index = cfg.custom_index.clone();
+            let root_name = cfg.root_name.clone();
+            let asset_handlers = asset_handlers.clone();
+            let edits = edits.clone();
             move |request, responder: RequestAsyncResponder| {
                 // Try to serve the index file first
                 if let Some(index_bytes) = protocol::index_request(
@@ -449,8 +468,7 @@ impl WebviewInstance {
         let mut webview = {
             use tao::platform::unix::WindowExtUnix;
             use wry::WebViewBuilderExtUnix;
-            let vbox = window.default_vbox().unwrap();
-            WebViewBuilder::new_gtk(vbox)
+            WebViewBuilder::new_gtk(defaultBox.as_ref())
         };
 
         // Disable the webview default shortcuts to disable the reload shortcut
@@ -554,9 +572,16 @@ impl WebviewInstance {
         dom: VirtualDom,
         shared: Rc<SharedContext>,
     ) -> WebviewInstance {
-        let shared_cloned = Rc::clone(&shared);
-        Self::new_with_window2(cfg, dom, shared, |event_loop| {
+        println!("COUCOU1");
+        Self::new_with_window2(cfg, dom, shared, |event_loop: &EventLoopWindowTarget<UserWindowEvent>| {
             let gtk_window = gtk::ApplicationWindow::new(event_loop.gtk_app());
+            gtk_window.set_app_paintable(true);
+            gtk_window.set_decorated(false);
+            gtk_window.stick();
+            gtk_window.set_title("This is a wongus");
+            let default_vbox = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            gtk_window.add(&default_vbox);
+
             gtk_window.init_layer_shell();
             gtk_window.set_layer(gtk_layer_shell::Layer::Top);
             gtk_window.auto_exclusive_zone_enable();
@@ -567,7 +592,8 @@ impl WebviewInstance {
             gtk_window.set_width_request(400);
             gtk_window.set_height_request(400);
             gtk_window.show_all();
-            tao::window::Window::new_from_gtk_window(&event_loop, gtk_window).unwrap()
+            let window = tao::window::Window::new_from_gtk_window(event_loop, gtk_window.clone()).unwrap();
+            (window, Rc::new(default_vbox))
         })
     }
 

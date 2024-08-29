@@ -69,8 +69,8 @@ pub fn launch_virtual_dom_blocking(virtual_dom: VirtualDom, desktop_config: Conf
 ///
 /// This will block the main thread, and *must* be spawned on the main thread. This function does not assume any runtime
 /// and is equivalent to calling launch_with_props with the tokio feature disabled.
-pub fn launch_virtual_dom_blocking_from_window(virtual_dom: VirtualDom) -> ! {
-    let (event_loop, mut app) = App::new_from_window(virtual_dom);
+pub fn launch_virtual_dom_blocking_from_window(virtual_dom: VirtualDom, desktop_config: Config) -> ! {
+    let (event_loop, mut app) = App::new_from_window(desktop_config, virtual_dom);
 
     event_loop.run(move |window_event, _, control_flow| {
         // Set the control flow and check if any events need to be handled in the app itself
@@ -141,14 +141,14 @@ pub fn launch_virtual_dom(virtual_dom: VirtualDom, desktop_config: Config) -> ! 
 }
 
 /// Launches the WebView and runs the event loop, with configuration and root props.
-pub fn launch_virtual_dom_from_window(virtual_dom: VirtualDom) -> ! {
+pub fn launch_virtual_dom_from_window(virtual_dom: VirtualDom, desktop_config: Config) -> ! {
     #[cfg(feature = "tokio_runtime")]
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .unwrap()
         .block_on(tokio::task::unconstrained(async move {
-            launch_virtual_dom_blocking_from_window(virtual_dom)
+            launch_virtual_dom_blocking_from_window(virtual_dom, desktop_config)
         }));
 
     #[cfg(not(feature = "tokio_runtime"))]
@@ -177,6 +177,7 @@ pub fn launch(
 pub fn launch_from_window(
     root: fn() -> Element,
     contexts: Vec<Box<dyn Fn() -> Box<dyn Any>>>,
+    platform_config: Config,
 ) -> ! {
     let mut virtual_dom = VirtualDom::new(root);
 
@@ -184,5 +185,5 @@ pub fn launch_from_window(
         virtual_dom.insert_any_root_context(context());
     }
 
-    launch_virtual_dom_from_window(virtual_dom)
+    launch_virtual_dom_from_window(virtual_dom, platform_config)
 }
