@@ -84,6 +84,15 @@ impl LaunchBuilder {
         }
     }
 
+    #[cfg(feature = "desktop")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "desktop")))]
+    pub fn desktop_from_window() -> LaunchBuilder<dioxus_desktop::Config, UnsendContext> {
+        LaunchBuilder {
+            launch_fn: |root, contexts, cfg| dioxus_desktop::launch::launch_from_window(root, contexts),
+            contexts: Vec::new(),
+            platform_config: None,
+        }
+    }
     /// Launch your fullstack application.
     #[cfg(feature = "fullstack")]
     #[cfg_attr(docsrs, doc(cfg(feature = "fullstack")))]

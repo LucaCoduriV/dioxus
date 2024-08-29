@@ -16,6 +16,12 @@ use futures_util::{pin_mut, FutureExt};
 use std::cell::OnceCell;
 use std::sync::Arc;
 use std::{rc::Rc, task::Waker};
+use gtk::prelude::WidgetExt;
+use gtk_layer_shell::LayerShell;
+use tao::event_loop;
+use tao::event_loop::EventLoop;
+use tao::platform::unix::{EventLoopWindowTargetExtUnix, WindowExtUnix};
+use tao::window::Window;
 use wry::{RequestAsyncResponder, WebContext, WebViewBuilder};
 
 #[derive(Clone)]
@@ -350,6 +356,219 @@ impl WebviewInstance {
             _menu: menu,
             _web_context: web_context,
         }
+    }
+
+
+    pub(crate) fn new_with_window2<F:Fn(EventLoop<UserWindowEvent>)->Window>(
+        mut cfg: Config,
+        dom: VirtualDom,
+        shared: Rc<SharedContext>,
+        window_builder: F,
+    ) -> WebviewInstance {
+        let window = window_builder(event_loop::EventLoopBuilder::<UserWindowEvent>::with_user_event().build());
+        // https://developer.apple.com/documentation/appkit/nswindowcollectionbehavior/nswindowcollectionbehaviormanaged
+        #[cfg(target_os = "macos")]
+        {
+            use cocoa::appkit::NSWindowCollectionBehavior;
+            use cocoa::base::id;
+            use objc::{msg_send, sel, sel_impl};
+            use tao::platform::macos::WindowExtMacOS;
+
+            unsafe {
+                let window: id = window.ns_window() as id;
+                let _: () = msg_send![window, setCollectionBehavior: NSWindowCollectionBehavior::NSWindowCollectionBehaviorManaged];
+            }
+        }
+
+        let mut web_context = WebContext::new(cfg.data_dir.clone());
+        let edit_queue = WryQueue::default();
+        let asset_handlers = AssetHandlerRegistry::new(dom.runtime());
+        let edits = WebviewEdits::new(dom.runtime(), edit_queue.clone());
+        let file_hover = NativeFileHover::default();
+        let headless = !cfg.window.window.visible;
+
+        let request_handler = {
+                let custom_head = cfg.custom_head.clone();
+                let custom_index = cfg.custom_index.clone();
+                let root_name = cfg.root_name.clone();
+                let asset_handlers = asset_handlers.clone();
+                let edits = edits.clone();
+            move |request, responder: RequestAsyncResponder| {
+                // Try to serve the index file first
+                if let Some(index_bytes) = protocol::index_request(
+                    &request,
+                    custom_head.clone(),
+                    custom_index.clone(),
+                    &root_name,
+                    headless,
+                ) {
+                    return responder.respond(index_bytes);
+                }
+
+                // Otherwise, try to serve an asset, either from the user or the filesystem
+                protocol::desktop_handler(request, asset_handlers.clone(), responder, &edits);
+            }
+        };
+
+        let ipc_handler = {
+            let window_id = window.id();
+            let proxy = shared.proxy.clone();
+            move |payload: wry::http::Request<String>| {
+                // defer the event to the main thread
+                let body = payload.into_body();
+                if let Ok(msg) = serde_json::from_str(&body) {
+                    _ = proxy.send_event(UserWindowEvent::Ipc { id: window_id, msg });
+                }
+            }
+        };
+
+        let file_drop_handler = {
+            to_owned![file_hover];
+            move |evt| {
+                // Update the most recent file drop event - when the event comes in from the webview we can use the
+                // most recent event to build a new event with the files in it.
+                file_hover.set(evt);
+                false
+            }
+        };
+
+        #[cfg(any(
+            target_os = "windows",
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "android"
+        ))]
+        let mut webview = WebViewBuilder::new(&window);
+
+        #[cfg(not(any(
+            target_os = "windows",
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "android"
+        )))]
+        let mut webview = {
+            use tao::platform::unix::WindowExtUnix;
+            use wry::WebViewBuilderExtUnix;
+            let vbox = window.default_vbox().unwrap();
+            WebViewBuilder::new_gtk(vbox)
+        };
+
+        // Disable the webview default shortcuts to disable the reload shortcut
+        #[cfg(target_os = "windows")]
+        {
+            use wry::WebViewBuilderExtWindows;
+            webview = webview.with_browser_accelerator_keys(false);
+        }
+
+        webview = webview
+            .with_transparent(cfg.window.window.transparent)
+            .with_url("dioxus://index.html/")
+            .with_ipc_handler(ipc_handler)
+            .with_navigation_handler(|var| {
+                // We don't want to allow any navigation
+                // We only want to serve the index file and assets
+                if var.starts_with("dioxus://") || var.starts_with("http://dioxus.") {
+                    true
+                } else {
+                    if var.starts_with("http://") || var.starts_with("https://") {
+                        _ = webbrowser::open(&var);
+                    }
+                    false
+                }
+            }) // prevent all navigations
+            .with_asynchronous_custom_protocol(String::from("dioxus"), request_handler)
+            .with_web_context(&mut web_context)
+            .with_drag_drop_handler(file_drop_handler);
+
+        if let Some(color) = cfg.background_color {
+            webview = webview.with_background_color(color);
+        }
+
+        for (name, handler) in cfg.protocols.drain(..) {
+            webview = webview.with_custom_protocol(name, handler);
+        }
+
+        for (name, handler) in cfg.asynchronous_protocols.drain(..) {
+            webview = webview.with_asynchronous_custom_protocol(name, handler);
+        }
+
+        const INITIALIZATION_SCRIPT: &str = r#"
+        if (document.addEventListener) {
+            document.addEventListener('contextmenu', function(e) {
+                e.preventDefault();
+            }, false);
+        } else {
+            document.attachEvent('oncontextmenu', function() {
+                window.event.returnValue = false;
+            });
+        }
+        "#;
+
+        if cfg.disable_context_menu {
+            // in release mode, we don't want to show the dev tool or reload menus
+            webview = webview.with_initialization_script(INITIALIZATION_SCRIPT)
+        } else {
+            // in debug, we are okay with the reload menu showing and dev tool
+            webview = webview.with_devtools(true);
+        }
+
+        let webview = webview.build().unwrap();
+
+        let menu = if cfg!(not(any(target_os = "android", target_os = "ios"))) {
+            if let Some(menu) = &cfg.menu {
+                crate::menubar::init_menu_bar(menu, &window);
+            }
+            cfg.menu
+        } else {
+            None
+        };
+
+        let desktop_context = Rc::from(DesktopService::new(
+            webview,
+            window,
+            shared.clone(),
+            asset_handlers,
+            file_hover,
+        ));
+
+        // Provide the desktop context to the virtual dom and edit handler
+        edits.set_desktop_context(desktop_context.clone());
+        let provider: Rc<dyn Document> = Rc::new(DesktopDocument::new(desktop_context.clone()));
+        dom.in_runtime(|| {
+            ScopeId::ROOT.provide_context(desktop_context.clone());
+            ScopeId::ROOT.provide_context(provider);
+        });
+
+        WebviewInstance {
+            dom,
+            edits,
+            waker: tao_waker(shared.proxy.clone(), desktop_context.window.id()),
+            desktop_context,
+            _menu: menu,
+            _web_context: web_context,
+        }
+    }
+
+    pub(crate) fn new_from_window(
+        mut cfg: Config,
+        dom: VirtualDom,
+        shared: Rc<SharedContext>,
+    ) -> WebviewInstance {
+        let shared_cloned = Rc::clone(&shared);
+        Self::new_with_window2(cfg, dom, shared, |event_loop| {
+            let gtk_window = gtk::ApplicationWindow::new(event_loop.gtk_app());
+            gtk_window.init_layer_shell();
+            gtk_window.set_layer(gtk_layer_shell::Layer::Top);
+            gtk_window.auto_exclusive_zone_enable();
+            gtk_window.set_anchor(gtk_layer_shell::Edge::Top, true);
+            gtk_window.set_anchor(gtk_layer_shell::Edge::Right, true);
+            gtk_window.set_anchor(gtk_layer_shell::Edge::Bottom, false);
+            gtk_window.set_anchor(gtk_layer_shell::Edge::Left, false);
+            gtk_window.set_width_request(400);
+            gtk_window.set_height_request(400);
+            gtk_window.show_all();
+            tao::window::Window::new_from_gtk_window(&event_loop, gtk_window).unwrap()
+        })
     }
 
     pub fn poll_vdom(&mut self) {
