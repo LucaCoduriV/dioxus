@@ -101,7 +101,10 @@ impl App {
         (event_loop, app)
     }
 
-    pub fn new_from_window(cfg: Config, virtual_dom: VirtualDom) -> (EventLoop<UserWindowEvent>, Self) {
+    pub fn new_from_window(
+        cfg: Config,
+        virtual_dom: VirtualDom,
+    ) -> (EventLoop<UserWindowEvent>, Self) {
         let event_loop = EventLoopBuilder::<UserWindowEvent>::with_user_event().build();
 
         let app = Self {
@@ -260,8 +263,12 @@ impl App {
         let virtual_dom = self.unmounted_dom.take().unwrap();
         let mut cfg = self.cfg.take().unwrap();
 
-        self.is_visible_before_start = cfg.window.window.visible;
-        cfg.window = cfg.window.with_visible(false);
+        self.is_visible_before_start = cfg
+            .window
+            .as_ref()
+            .map(|w| w.window.visible)
+            .unwrap_or(true);
+        cfg.window = cfg.window.map(|w| w.with_visible(false));
 
         let webview = WebviewInstance::new(cfg, virtual_dom, self.shared.clone());
 
@@ -273,14 +280,12 @@ impl App {
         self.webviews.insert(id, webview);
     }
 
-    pub fn handle_start_cause_init_from_window(&mut self) {
+    pub fn handle_start_cause_init_from_gtk_window(&mut self) {
         let virtual_dom = self.unmounted_dom.take().unwrap();
-        let mut cfg = self.cfg.take().unwrap();
+        let cfg = self.cfg.take().unwrap();
+        self.is_visible_before_start = true;
 
-        self.is_visible_before_start = cfg.window.window.visible;
-        cfg.window = cfg.window.with_visible(false);
-
-        let webview = WebviewInstance::new_from_window(cfg, virtual_dom, self.shared.clone());
+        let webview = WebviewInstance::new_in_gtk_window(cfg, virtual_dom, self.shared.clone());
 
         // And then attempt to resume from state
         #[cfg(debug_assertions)]

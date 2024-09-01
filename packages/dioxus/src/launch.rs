@@ -3,7 +3,7 @@
 #![allow(unused)]
 use dioxus_config_macro::*;
 use std::any::Any;
-
+use dioxus_desktop::Config;
 use crate::prelude::*;
 
 /// A builder for a fullstack app.
@@ -15,7 +15,7 @@ pub struct LaunchBuilder<Cfg: 'static = (), ContextFn: ?Sized = ValidContext> {
     platform_config: Option<Cfg>,
 }
 
-pub type LaunchFn<Cfg, Context> = fn(fn() -> Element, Vec<Box<Context>>, Cfg);
+pub type LaunchFn<Cfg, Context> = dyn Fn(fn() -> Element, Vec<Box<Context>>, Cfg);
 
 #[cfg(any(
     feature = "fullstack",
@@ -86,11 +86,12 @@ impl LaunchBuilder {
 
     #[cfg(feature = "desktop")]
     #[cfg_attr(docsrs, doc(cfg(feature = "desktop")))]
-    pub fn desktop_from_window() -> LaunchBuilder<dioxus_desktop::Config, UnsendContext> {
+    pub fn desktop_from_gtk_window() -> LaunchBuilder<dioxus_desktop::Config, UnsendContext> {
+        let config = Config::new_from_gtk_window();
         LaunchBuilder {
-            launch_fn: |root, contexts, cfg| dioxus_desktop::launch::launch_from_window(root, contexts, cfg),
+            launch_fn: |root, contexts, cfg| dioxus_desktop::launch::launch_from_gtk_window(root, contexts, cfg),
             contexts: Vec::new(),
-            platform_config: None,
+            platform_config: Some(config),
         }
     }
     /// Launch your fullstack application.
@@ -132,7 +133,7 @@ impl LaunchBuilder {
     /// Provide a custom launch function for your application.
     ///
     /// Useful for third party renderers to tap into the launch builder API without having to reimplement it.
-    pub fn custom<Cfg, List>(launch_fn: LaunchFn<Cfg, List>) -> LaunchBuilder<Cfg, List> {
+    pub fn custom<Cfg, List>(launch_fn: Box<LaunchFn<Cfg, List>>) -> LaunchBuilder<Cfg, List> {
         LaunchBuilder {
             launch_fn,
             contexts: vec![],

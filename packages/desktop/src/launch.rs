@@ -1,8 +1,5 @@
 pub use crate::Config;
-use crate::{
-    app::App,
-    ipc::{IpcMethod, UserWindowEvent},
-};
+use crate::{app::App, ipc::{IpcMethod, UserWindowEvent}};
 use dioxus_core::*;
 use std::any::Any;
 use tao::event::{Event, StartCause, WindowEvent};
@@ -65,11 +62,17 @@ pub fn launch_virtual_dom_blocking(virtual_dom: VirtualDom, desktop_config: Conf
     })
 }
 
+#[cfg(not(any(
+    target_os = "windows",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "android"
+)))]
 /// Launch the WebView and run the event loop, with configuration and root props.
 ///
 /// This will block the main thread, and *must* be spawned on the main thread. This function does not assume any runtime
 /// and is equivalent to calling launch_with_props with the tokio feature disabled.
-pub fn launch_virtual_dom_blocking_from_window(virtual_dom: VirtualDom, desktop_config: Config) -> ! {
+pub fn launch_virtual_dom_blocking_in_gtk_window(virtual_dom: VirtualDom, desktop_config: Config) -> ! {
     let (event_loop, mut app) = App::new_from_window(desktop_config, virtual_dom);
 
     event_loop.run(move |window_event, _, control_flow| {
@@ -77,7 +80,7 @@ pub fn launch_virtual_dom_blocking_from_window(virtual_dom: VirtualDom, desktop_
         app.tick(&window_event);
 
         match window_event {
-            Event::NewEvents(StartCause::Init) => app.handle_start_cause_init_from_window(),
+            Event::NewEvents(StartCause::Init) => app.handle_start_cause_init_from_gtk_window(),
             Event::LoopDestroyed => app.handle_loop_destroyed(),
             Event::WindowEvent {
                 event, window_id, ..
@@ -140,15 +143,21 @@ pub fn launch_virtual_dom(virtual_dom: VirtualDom, desktop_config: Config) -> ! 
     unreachable!("The desktop launch function will never exit")
 }
 
+#[cfg(not(any(
+    target_os = "windows",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "android"
+)))]
 /// Launches the WebView and runs the event loop, with configuration and root props.
-pub fn launch_virtual_dom_from_window(virtual_dom: VirtualDom, desktop_config: Config) -> ! {
+pub fn launch_virtual_dom_in_gtk_window(virtual_dom: VirtualDom, desktop_config: Config) -> ! {
     #[cfg(feature = "tokio_runtime")]
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .unwrap()
         .block_on(tokio::task::unconstrained(async move {
-            launch_virtual_dom_blocking_from_window(virtual_dom, desktop_config)
+            launch_virtual_dom_blocking_in_gtk_window(virtual_dom, desktop_config)
         }));
 
     #[cfg(not(feature = "tokio_runtime"))]
@@ -173,8 +182,14 @@ pub fn launch(
 }
 
 
+#[cfg(not(any(
+    target_os = "windows",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "android"
+)))]
 /// Launches the WebView and runs the event loop, with configuration and root props.
-pub fn launch_from_window(
+pub fn launch_from_gtk_window(
     root: fn() -> Element,
     contexts: Vec<Box<dyn Fn() -> Box<dyn Any>>>,
     platform_config: Config,
@@ -185,5 +200,5 @@ pub fn launch_from_window(
         virtual_dom.insert_any_root_context(context());
     }
 
-    launch_virtual_dom_from_window(virtual_dom, platform_config)
+    launch_virtual_dom_in_gtk_window(virtual_dom, platform_config)
 }
