@@ -555,40 +555,18 @@ impl WebviewInstance {
         }
     }
 
-    pub(crate) fn new_in_gtk_window(
+    pub(crate) fn new_in_gtk_window<F>(
         cfg: Config,
         dom: VirtualDom,
         shared: Rc<SharedContext>,
-    ) -> WebviewInstance {
-        Self::new_with_gtk_window(
-            cfg,
-            dom,
-            shared,
-            |event_loop: &EventLoopWindowTarget<UserWindowEvent>| {
-                let gtk_window = gtk::ApplicationWindow::new(event_loop.gtk_app());
-                gtk_window.set_app_paintable(true);
-                gtk_window.set_decorated(false);
-                gtk_window.stick();
-                gtk_window.set_title("This is a wongus");
-                let default_vbox = gtk::Box::new(gtk::Orientation::Vertical, 0);
-                gtk_window.add(&default_vbox);
-
-                gtk_window.init_layer_shell();
-                gtk_window.set_layer(gtk_layer_shell::Layer::Top);
-                gtk_window.auto_exclusive_zone_enable();
-                gtk_window.set_anchor(gtk_layer_shell::Edge::Top, true);
-                gtk_window.set_anchor(gtk_layer_shell::Edge::Right, true);
-                gtk_window.set_anchor(gtk_layer_shell::Edge::Bottom, false);
-                gtk_window.set_anchor(gtk_layer_shell::Edge::Left, false);
-                gtk_window.set_width_request(400);
-                gtk_window.set_height_request(400);
-                gtk_window.show_all();
-                let window =
-                    tao::window::Window::new_from_gtk_window(event_loop, gtk_window.clone())
-                        .unwrap();
-                (window, Rc::new(default_vbox))
-            },
-        )
+        gtk_window_builder: F,
+    ) -> WebviewInstance
+    where
+        F: Fn(&EventLoopWindowTarget<UserWindowEvent>) -> (tao::window::Window, Rc<gtk::Box>)
+            + Clone
+            + 'static,
+    {
+        Self::new_with_gtk_window(cfg, dom, shared, gtk_window_builder)
     }
 
     pub fn poll_vdom(&mut self) {

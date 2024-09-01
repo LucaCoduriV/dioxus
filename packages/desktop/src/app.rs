@@ -280,12 +280,22 @@ impl App {
         self.webviews.insert(id, webview);
     }
 
-    pub fn handle_start_cause_init_from_gtk_window(&mut self) {
+    pub fn handle_start_cause_init_from_gtk_window<F>(&mut self, gtk_window_builder: F)
+    where
+        F: Fn(&EventLoopWindowTarget<UserWindowEvent>) -> (tao::window::Window, Rc<gtk::Box>)
+            + Clone
+            + 'static,
+    {
         let virtual_dom = self.unmounted_dom.take().unwrap();
         let cfg = self.cfg.take().unwrap();
         self.is_visible_before_start = true;
 
-        let webview = WebviewInstance::new_in_gtk_window(cfg, virtual_dom, self.shared.clone());
+        let webview = WebviewInstance::new_in_gtk_window(
+            cfg,
+            virtual_dom,
+            self.shared.clone(),
+            gtk_window_builder,
+        );
 
         // And then attempt to resume from state
         #[cfg(debug_assertions)]

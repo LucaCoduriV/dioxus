@@ -48,3 +48,17 @@ pub use event_handlers::WryEventHandler;
 pub use hooks::*;
 pub use shortcut::{ShortcutHandle, ShortcutRegistryError};
 pub use wry::RequestAsyncResponder;
+pub use ipc::UserWindowEvent;
+
+#[cfg(not(any(
+    target_os = "windows",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "android"
+)))]
+/// Reexports to be able to use a gtk window
+pub mod gtk_window{
+    pub use gtk;
+    pub use tao::event_loop::EventLoopWindowTarget;
+    pub use tao::window::Window;
+}
