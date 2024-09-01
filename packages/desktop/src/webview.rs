@@ -6,21 +6,18 @@ use crate::{
     file_upload::NativeFileHover, ipc::UserWindowEvent, protocol, waker::tao_waker, Config,
     DesktopContext, DesktopService,
 };
-use dioxus_core::{AnyValue, Runtime, ScopeId, VirtualDom};
+use dioxus_core::{Runtime, ScopeId, VirtualDom};
 use dioxus_hooks::to_owned;
 use dioxus_html::document::Document;
 use dioxus_html::native_bind::NativeFileEngine;
 use dioxus_html::{HasFileData, HtmlEvent, PlatformEventData};
 use dioxus_interpreter_js::SynchronousEventResponse;
 use futures_util::{pin_mut, FutureExt};
-use gtk::prelude::{ContainerExt, GtkWindowExt, WidgetExt};
-use gtk_layer_shell::LayerShell;
 use std::cell::OnceCell;
 use std::sync::Arc;
 use std::{rc::Rc, task::Waker};
-use tao::event_loop;
-use tao::event_loop::{EventLoop, EventLoopWindowTarget};
-use tao::platform::unix::{EventLoopWindowTargetExtUnix, WindowExtUnix};
+use tao::event_loop::{EventLoopWindowTarget};
+use tao::platform::unix::{WindowExtUnix};
 use tao::window::Window;
 use wry::{RequestAsyncResponder, WebContext, WebViewBuilder};
 
@@ -371,7 +368,7 @@ impl WebviewInstance {
         shared: Rc<SharedContext>,
         window_builder: F,
     ) -> WebviewInstance {
-        let (window, defaultBox) = window_builder(&shared.target);
+        let (window, default_box) = window_builder(&shared.target);
         // https://developer.apple.com/documentation/appkit/nswindowcollectionbehavior/nswindowcollectionbehaviormanaged
         #[cfg(target_os = "macos")]
         {
@@ -453,9 +450,8 @@ impl WebviewInstance {
             target_os = "android"
         )))]
         let mut webview = {
-            use tao::platform::unix::WindowExtUnix;
             use wry::WebViewBuilderExtUnix;
-            WebViewBuilder::new_gtk(defaultBox.as_ref())
+            WebViewBuilder::new_gtk(default_box.as_ref())
         };
 
         // Disable the webview default shortcuts to disable the reload shortcut
