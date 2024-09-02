@@ -168,7 +168,7 @@ impl WebviewInstance {
             ));
         }
 
-        let window = cfg.window.take().unwrap().build(&shared.target).unwrap();
+        let window = cfg.window.clone().unwrap().build(&shared.target).unwrap();
 
         // https://developer.apple.com/documentation/appkit/nswindowcollectionbehavior/nswindowcollectionbehaviormanaged
         #[cfg(target_os = "macos")]
@@ -189,10 +189,7 @@ impl WebviewInstance {
         let asset_handlers = AssetHandlerRegistry::new(dom.runtime());
         let edits = WebviewEdits::new(dom.runtime(), edit_queue.clone());
         let file_hover = NativeFileHover::default();
-        let headless = !cfg
-            .window
-            .as_ref()
-            .expect("Window builder missing")
+        let headless = !window_builder
             .window
             .visible;
 
