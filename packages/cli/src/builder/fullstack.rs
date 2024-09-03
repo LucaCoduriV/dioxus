@@ -1,3 +1,4 @@
+use futures_channel::mpsc::UnboundedSender;
 use toml_edit::Item;
 
 use crate::builder::Build;
@@ -6,10 +7,118 @@ use crate::dioxus_crate::DioxusCrate;
 use crate::builder::BuildRequest;
 use std::io::Write;
 
-use super::TargetPlatform;
+use super::{BuildReason, TargetPlatform, UpdateBuildProgress};
 
 static CLIENT_PROFILE: &str = "dioxus-client";
 static SERVER_PROFILE: &str = "dioxus-server";
+
+impl BuildRequest {
+    pub(crate) fn new_single(
+        reason: BuildReason,
+        krate: DioxusCrate,
+        arguments: Build,
+        progress: UnboundedSender<UpdateBuildProgress>,
+        platform: TargetPlatform,
+    ) -> Self {
+        Self {
+            progress,
+            reason,
+            krate,
+            target_platform: platform,
+            build_arguments: arguments,
+            target_dir: Default::default(),
+            rust_flags: Default::default(),
+            executable: Default::default(),
+            assets: Default::default(),
+            child: None,
+        }
+    }
+
+    pub(crate) fn new_fullstack(
+        config: DioxusCrate,
+        build_arguments: Build,
+        serve: BuildReason,
+        progress: UnboundedSender<UpdateBuildProgress>,
+    ) -> Result<Vec<Self>, crate::Error> {
+        initialize_profiles(&config)?;
+
+        Ok(vec![
+            Self::new_client(serve, &config, build_arguments.clone(), progress.clone()),
+            Self::new_server(serve, &config, build_arguments, progress),
+        ])
+    }
+
+    fn new_with_target_directory_rust_flags_and_features(
+        serve: BuildReason,
+        config: &DioxusCrate,
+        build: &Build,
+        feature: Option<String>,
+        target_platform: TargetPlatform,
+        progress: UnboundedSender<UpdateBuildProgress>,
+    ) -> Self {
+        let config = config.clone();
+        let mut build = build.clone();
+
+        // Add the server feature to the features we pass to the build
+        if let Some(feature) = feature {
+            build.target_args.features.push(feature);
+        }
+
+        // Add the server flags to the build arguments
+        Self {
+            reason: serve,
+            build_arguments: build.clone(),
+            krate: config,
+            rust_flags: Default::default(),
+            target_dir: None,
+            target_platform,
+            executable: None,
+            assets: Default::default(),
+            progress,
+            child: None,
+        }
+    }
+
+    fn new_server(
+        serve: BuildReason,
+        config: &DioxusCrate,
+        mut build: Build,
+        progress: UnboundedSender<UpdateBuildProgress>,
+    ) -> Self {
+        if build.profile.is_none() {
+            build.profile = Some(CLIENT_PROFILE.to_string());
+        }
+        let client_feature = build.auto_detect_server_feature(config);
+        Self::new_with_target_directory_rust_flags_and_features(
+            serve,
+            config,
+            &build,
+            build.target_args.server_feature.clone().or(client_feature),
+            TargetPlatform::Server,
+            progress,
+        )
+    }
+
+    fn new_client(
+        serve: BuildReason,
+        config: &DioxusCrate,
+        mut build: Build,
+        progress: UnboundedSender<UpdateBuildProgress>,
+    ) -> Self {
+        if build.profile.is_none() {
+            build.profile = Some(SERVER_PROFILE.to_string());
+        }
+        let (client_feature, client_platform) = build.auto_detect_client_platform(config);
+        Self::new_with_target_directory_rust_flags_and_features(
+            serve,
+            config,
+            &build,
+            build.target_args.client_feature.clone().or(client_feature),
+            client_platform,
+            progress,
+        )
+    }
+}
 
 // The `opt-level=2` increases build times, but can noticeably decrease time
 // between saving changes and being able to interact with an app. The "overall"
@@ -55,74 +164,4 @@ fn initialize_profiles(config: &DioxusCrate) -> crate::Result<()> {
     write!(buf_writer, "{}", config)?;
 
     Ok(())
-}
-
-impl BuildRequest {
-    pub(crate) fn new_fullstack(
-        config: DioxusCrate,
-        build_arguments: Build,
-        serve: bool,
-    ) -> Result<Vec<Self>, crate::Error> {
-        initialize_profiles(&config)?;
-
-        Ok(vec![
-            Self::new_client(serve, &config, &build_arguments),
-            Self::new_server(serve, &config, &build_arguments),
-        ])
-    }
-
-    fn new_with_target_directory_rust_flags_and_features(
-        serve: bool,
-        config: &DioxusCrate,
-        build: &Build,
-        feature: Option<String>,
-        target_platform: TargetPlatform,
-    ) -> Self {
-        let config = config.clone();
-        let mut build = build.clone();
-        // Add the server feature to the features we pass to the build
-        if let Some(feature) = feature {
-            build.target_args.features.push(feature);
-        }
-
-        // Add the server flags to the build arguments
-        Self {
-            serve,
-            build_arguments: build.clone(),
-            dioxus_crate: config,
-            rust_flags: Default::default(),
-            target_dir: None,
-            target_platform,
-        }
-    }
-
-    fn new_server(serve: bool, config: &DioxusCrate, build: &Build) -> Self {
-        let mut build = build.clone();
-        if build.profile.is_none() {
-            build.profile = Some(CLIENT_PROFILE.to_string());
-        }
-        let client_feature = build.auto_detect_server_feature(config);
-        Self::new_with_target_directory_rust_flags_and_features(
-            serve,
-            config,
-            &build,
-            build.target_args.server_feature.clone().or(client_feature),
-            TargetPlatform::Server,
-        )
-    }
-
-    fn new_client(serve: bool, config: &DioxusCrate, build: &Build) -> Self {
-        let mut build = build.clone();
-        if build.profile.is_none() {
-            build.profile = Some(SERVER_PROFILE.to_string());
-        }
-        let (client_feature, client_platform) = build.auto_detect_client_platform(config);
-        Self::new_with_target_directory_rust_flags_and_features(
-            serve,
-            config,
-            &build,
-            build.target_args.client_feature.clone().or(client_feature),
-            client_platform,
-        )
-    }
 }

@@ -1,3 +1,4 @@
+use crate::config::AddressArguments;
 use crate::{
     settings::{self},
     tracer::CLILogControl,
@@ -5,7 +6,6 @@ use crate::{
 };
 use anyhow::Context;
 use build::Build;
-use dioxus_cli_config::AddressArguments;
 use std::ops::Deref;
 
 use super::*;
@@ -114,6 +114,10 @@ impl Serve {
 
         crate::serve::serve_all(self, dioxus_crate, log_control).await?;
         Ok(())
+    }
+
+    pub fn should_hotreload(&self) -> bool {
+        self.server_arguments.hot_reload.unwrap_or(true)
     }
 }
 

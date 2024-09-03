@@ -5,7 +5,7 @@ use dioxus::prelude::*;
 use tokio::time::sleep;
 use web_time::Instant;
 
-const STYLE: &str = asset!("./examples/assets/clock.css");
+const STYLE: Asset = asset!("/examples/assets/clock.css");
 
 fn main() {
     launch(app);
@@ -36,7 +36,7 @@ fn app() -> Element {
     );
 
     rsx! {
-        head::Link { rel: "stylesheet", href: STYLE }
+        document::Stylesheet { href: STYLE }
         div { id: "app",
             div { id: "title", "Carpe diem 🎉" }
             div { id: "clock-display", "{time}" }

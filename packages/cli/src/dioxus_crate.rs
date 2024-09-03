@@ -1,5 +1,7 @@
-use crate::build::TargetArgs;
-use dioxus_cli_config::{DioxusConfig, Platform};
+use crate::{
+    build::TargetArgs,
+    config::{DioxusConfig, Platform},
+};
 use krates::cm::Target;
 use krates::{cm::TargetKind, Cmd, Krates, NodeId};
 use serde::{Deserialize, Serialize};
@@ -31,6 +33,7 @@ fn load_dioxus_config(
         .as_std_path()
         .to_path_buf()
         .canonicalize()?;
+
     let workspace_path = krates
         .workspace_root()
         .as_std_path()

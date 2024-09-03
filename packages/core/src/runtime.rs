@@ -377,9 +377,7 @@ impl Runtime {
                     self.rendering.set(false);
                     listener.call(uievent.clone());
                     self.rendering.set(true);
-                    let metadata = uievent.metadata.borrow();
-
-                    if !metadata.propagates {
+                    if !uievent.propagates() {
                         return;
                     }
                 }
@@ -435,7 +433,7 @@ impl Runtime {
 /// }
 ///
 /// fn app() -> Element {
-///     rsx!{ Component { runtime: Runtime::current().unwrap() } }
+///     rsx! { Component { runtime: Runtime::current().unwrap() } }
 /// }
 ///
 /// // In a dynamic library

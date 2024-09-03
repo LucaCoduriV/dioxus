@@ -20,9 +20,9 @@ fn app() -> Element {
     _ = use_global_shortcut("cmd+g", move || show_overlay.toggle());
 
     rsx! {
-        head::Link {
+        document::Link {
             rel: "stylesheet",
-            href: asset!("./examples/assets/overlay.css"),
+            href: asset!("/examples/assets/overlay.css"),
         }
         if show_overlay() {
             div {

@@ -1,11 +1,11 @@
-use crate::build::Build;
 use crate::DioxusCrate;
+use crate::{build::Build, bundle_utils::make_tauri_bundler_settings};
 use anyhow::Context;
 use std::env::current_dir;
 use std::fs::create_dir_all;
 use std::ops::Deref;
 use std::str::FromStr;
-use tauri_bundler::{BundleSettings, PackageSettings, SettingsBuilder};
+use tauri_bundler::{PackageSettings, SettingsBuilder};
 
 use super::*;
 
@@ -15,6 +15,7 @@ use super::*;
 pub struct Bundle {
     #[clap(long)]
     pub package: Option<Vec<String>>,
+
     /// The arguments for the dioxus build
     #[clap(flatten)]
     pub build_arguments: Build,
@@ -96,7 +97,9 @@ impl Bundle {
                 .set_src_path(Some(dioxus_crate.workspace_dir().display().to_string())),
         ];
 
-        let mut bundle_settings: BundleSettings = dioxus_crate.dioxus_config.bundle.clone().into();
+        let bundle_config = dioxus_crate.dioxus_config.bundle.clone();
+        let mut bundle_settings = make_tauri_bundler_settings(bundle_config);
+
         if cfg!(windows) {
             let windows_icon_override = dioxus_crate
                 .dioxus_config
@@ -193,7 +196,7 @@ impl Bundle {
         #[cfg(target_os = "macos")]
         std::env::set_var("CI", "true");
 
-        tauri_bundler::bundle::bundle_project(settings.unwrap()).unwrap_or_else(|err|{
+        tauri_bundler::bundle::bundle_project(&settings.unwrap()).unwrap_or_else(|err|{
             #[cfg(target_os = "macos")]
             panic!("Failed to bundle project: {:#?}\nMake sure you have automation enabled in your terminal (https://github.com/tauri-apps/tauri/issues/3055#issuecomment-1624389208) and full disk access enabled for your terminal (https://github.com/tauri-apps/tauri/issues/3055#issuecomment-1624389208)", err);
             #[cfg(not(target_os = "macos"))]

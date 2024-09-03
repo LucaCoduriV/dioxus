@@ -1,10 +1,8 @@
-use std::collections::{HashMap, HashSet};
-use std::{fs, path::PathBuf, time::Duration};
-
-use super::hot_reloading_file_map::HotreloadError;
+use super::detect::is_wsl;
+use super::{hot_reloading_file_map::HotreloadError, update::ServeUpdate};
 use crate::serve::hot_reloading_file_map::FileMap;
 use crate::{cli::serve::Serve, dioxus_crate::DioxusCrate};
-use dioxus_hot_reload::HotReloadMsg;
+use dioxus_devtools_types::HotReloadMsg;
 use dioxus_html::HtmlCtx;
 use futures_channel::mpsc::{UnboundedReceiver, UnboundedSender};
 use futures_util::StreamExt;
@@ -13,6 +11,8 @@ use notify::{
     event::{MetadataKind, ModifyKind},
     Config, EventKind,
 };
+use std::collections::{HashMap, HashSet};
+use std::{fs, path::PathBuf, time::Duration};
 
 /// This struct stores the file watcher and the filemap for the project.
 ///
@@ -22,7 +22,7 @@ pub struct Watcher {
     _tx: UnboundedSender<notify::Event>,
     rx: UnboundedReceiver<notify::Event>,
     _last_update_time: i64,
-    _watcher: Box<dyn notify::Watcher>,
+    watcher: Box<dyn notify::Watcher>,
     queued_events: Vec<notify::Event>,
     file_map: FileMap,
     ignore: Gitignore,
@@ -129,7 +129,7 @@ impl Watcher {
         Self {
             _tx: tx,
             rx,
-            _watcher: watcher,
+            watcher,
             file_map,
             ignore,
             queued_events: Vec::new(),
@@ -141,20 +141,24 @@ impl Watcher {
     /// A cancel safe handle to the file watcher
     ///
     /// todo: this should be simpler logic?
-    pub async fn wait(&mut self) {
+    pub async fn wait(&mut self) -> ServeUpdate {
         // Pull off any queued events in succession
         while let Ok(Some(event)) = self.rx.try_next() {
             self.queued_events.push(event);
         }
 
         if !self.queued_events.is_empty() {
-            return;
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            tracing::info!("Waiting for file changes!");
+            return ServeUpdate::FilesChanged {};
         }
 
         // If there are no queued events, wait for the next event
         if let Some(event) = self.rx.next().await {
             self.queued_events.push(event);
         }
+
+        ServeUpdate::FilesChanged {}
     }
 
     /// Deques changed files from the event queue, doing the proper intelligent filtering
@@ -202,14 +206,16 @@ impl Watcher {
 
             // If the extension is a backup file, or a hidden file, ignore it completely (no rebuilds)
             if is_backup_file(path.to_path_buf()) {
-                tracing::trace!("Ignoring backup file: {:?}", path);
                 continue;
             }
 
             // If the path is ignored, don't watch it
             if self.ignore.matched(path, path.is_dir()).is_ignore() {
+                tracing::info!("Ignoring update to file: {:?}", path);
                 continue;
             }
+
+            tracing::info!("Enqueuing hotreload update to file: {:?}", path);
 
             modified_files.push(path.clone());
         }
@@ -358,39 +364,6 @@ fn is_allowed_notify_event(event: &notify::Event) -> bool {
         // Don't care about anything else.
         _ => false,
     }
-}
-
-const WSL_1: &str = "/proc/sys/kernel/osrelease";
-const WSL_2: &str = "/proc/version";
-const WSL_KEYWORDS: [&str; 2] = ["microsoft", "wsl"];
-
-/// Detects if `dx` is being ran in a WSL environment.
-///
-/// We determine this based on whether the keyword `microsoft` or `wsl` is contained within the [`WSL_1`] or [`WSL_2`] files.
-/// This may fail in the future as it isn't guaranteed by Microsoft.
-/// See https://github.com/microsoft/WSL/issues/423#issuecomment-221627364
-fn is_wsl() -> bool {
-    // Test 1st File
-    if let Ok(content) = fs::read_to_string(WSL_1) {
-        let lowercase = content.to_lowercase();
-        for keyword in WSL_KEYWORDS {
-            if lowercase.contains(keyword) {
-                return true;
-            }
-        }
-    }
-
-    // Test 2nd File
-    if let Ok(content) = fs::read_to_string(WSL_2) {
-        let lowercase = content.to_lowercase();
-        for keyword in WSL_KEYWORDS {
-            if lowercase.contains(keyword) {
-                return true;
-            }
-        }
-    }
-
-    false
 }
 
 #[test]

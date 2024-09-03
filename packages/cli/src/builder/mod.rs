@@ -1,192 +1,136 @@
 use crate::build::Build;
-use crate::cli::serve::ServeArguments;
-use crate::dioxus_crate::DioxusCrate;
+use crate::config::Platform;
 use crate::Result;
-use dioxus_cli_config::{Platform, RuntimeCLIArguments};
-use futures_util::stream::select_all;
+use crate::{assets::AssetManifest, dioxus_crate::DioxusCrate};
+use futures_channel::mpsc::{UnboundedReceiver, UnboundedSender};
 use futures_util::StreamExt;
-use std::net::SocketAddr;
-use std::str::FromStr;
-use std::{path::PathBuf, process::Stdio};
-use tokio::process::{Child, Command};
+pub use platform::TargetPlatform;
+use std::path::PathBuf;
 
+mod assets;
+mod bundle;
 mod cargo;
 mod fullstack;
+mod handle;
+mod platform;
 mod prepare_html;
 mod progress;
 mod web;
+
 pub use progress::{
     BuildMessage, MessageSource, MessageType, Stage, UpdateBuildProgress, UpdateStage,
 };
 
-/// The target platform for the build
-/// This is very similar to the Platform enum, but we need to be able to differentiate between the
-/// server and web targets for the fullstack platform
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum TargetPlatform {
-    Web,
-    Desktop,
-    Server,
-    Liveview,
-}
-
-impl FromStr for TargetPlatform {
-    type Err = ();
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "web" => Ok(Self::Web),
-            "desktop" => Ok(Self::Desktop),
-            "axum" | "server" => Ok(Self::Server),
-            "liveview" => Ok(Self::Liveview),
-            _ => Err(()),
-        }
-    }
-}
-
-impl std::fmt::Display for TargetPlatform {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TargetPlatform::Web => write!(f, "web"),
-            TargetPlatform::Desktop => write!(f, "desktop"),
-            TargetPlatform::Server => write!(f, "server"),
-            TargetPlatform::Liveview => write!(f, "liveview"),
-        }
-    }
-}
-
-/// A request for a project to be built
-#[derive(Clone)]
+/// An app that's built, bundled, processed, and a handle to its running app, if it exists
+///
+/// As the build progresses, we'll fill in fields like assets, executable, entitlements, etc
+///
+/// If the app needs to be bundled, we'll add the bundle info here too
 pub struct BuildRequest {
     /// Whether the build is for serving the application
-    pub serve: bool,
+    pub reason: BuildReason,
+
     /// The configuration for the crate we are building
-    pub dioxus_crate: DioxusCrate,
+    pub krate: DioxusCrate,
+
     /// The target platform for the build
     pub target_platform: TargetPlatform,
+
     /// The arguments for the build
     pub build_arguments: Build,
+
     /// The rustc flags to pass to the build
     pub rust_flags: Vec<String>,
+
     /// The target directory for the build
     pub target_dir: Option<PathBuf>,
+
+    /// The output executable location
+    pub executable: Option<PathBuf>,
+
+    /// The assets manifest - starts empty and will be populated as we go
+    pub assets: AssetManifest,
+
+    /// The child process of this running app that has yet to be spawned.
+    ///
+    /// We might need to finangle this into something else
+    pub child: Option<tokio::process::Child>,
+
+    /// Status channel to send our progress updates to
+    pub progress: UnboundedSender<UpdateBuildProgress>,
+}
+
+/// The reason for the build - this will determine how we prep the output
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BuildReason {
+    Serve,
+    Build,
+    Bundle,
 }
 
 impl BuildRequest {
     pub fn create(
-        serve: bool,
+        serve: BuildReason,
         dioxus_crate: &DioxusCrate,
         build_arguments: impl Into<Build>,
+        progress: UnboundedSender<UpdateBuildProgress>,
     ) -> crate::Result<Vec<Self>> {
-        let build_arguments = build_arguments.into();
-        let platform = build_arguments.platform();
+        let build_arguments: Build = build_arguments.into();
+
         let single_platform = |platform| {
-            let dioxus_crate = dioxus_crate.clone();
-            vec![Self {
+            let req = Self::new_single(
                 serve,
-                dioxus_crate,
-                build_arguments: build_arguments.clone(),
-                target_platform: platform,
-                rust_flags: Default::default(),
-                target_dir: Default::default(),
-            }]
+                dioxus_crate.clone(),
+                build_arguments.clone(),
+                progress.clone(),
+                platform,
+            );
+            Ok(vec![req])
         };
-        Ok(match platform {
+
+        match build_arguments.platform() {
             Platform::Liveview => single_platform(TargetPlatform::Liveview),
             Platform::Web => single_platform(TargetPlatform::Web),
             Platform::Desktop => single_platform(TargetPlatform::Desktop),
-            Platform::StaticGeneration | Platform::Fullstack => {
-                Self::new_fullstack(dioxus_crate.clone(), build_arguments, serve)?
+            Platform::Mobile => single_platform(TargetPlatform::Mobile),
+
+            Platform::Fullstack => {
+                Self::new_fullstack(dioxus_crate.clone(), build_arguments, serve, progress)
             }
-            _ => unimplemented!("Unknown platform: {platform:?}"),
-        })
+        }
     }
 
     pub(crate) async fn build_all_parallel(
         build_requests: Vec<BuildRequest>,
-    ) -> Result<Vec<BuildResult>> {
+        mut rx: UnboundedReceiver<UpdateBuildProgress>,
+    ) -> Result<Vec<BuildRequest>> {
         let multi_platform_build = build_requests.len() > 1;
-        let mut build_progress = Vec::new();
         let mut set = tokio::task::JoinSet::new();
+
         for build_request in build_requests {
-            let (tx, rx) = futures_channel::mpsc::unbounded();
-            build_progress.push((build_request.build_arguments.platform(), rx));
-            set.spawn(async move { build_request.build(tx).await });
+            set.spawn(async move { build_request.build().await });
         }
 
         // Watch the build progress as it comes in
-        loop {
-            let mut next = select_all(
-                build_progress
-                    .iter_mut()
-                    .map(|(platform, rx)| rx.map(move |update| (*platform, update))),
-            );
-            match next.next().await {
-                Some((platform, update)) => {
-                    if multi_platform_build {
-                        print!("{platform} build: ");
-                        update.to_std_out();
-                    } else {
-                        update.to_std_out();
-                    }
-                }
-                None => {
-                    break;
-                }
+        while let Some(update) = rx.next().await {
+            if multi_platform_build {
+                let platform = update.platform;
+                print!("{platform} build: ");
+                update.to_std_out();
+            } else {
+                update.to_std_out();
             }
         }
 
         let mut all_results = Vec::new();
 
         while let Some(result) = set.join_next().await {
-            let result = result
-                .map_err(|_| crate::Error::Unique("Failed to build project".to_owned()))??;
-            all_results.push(result);
+            all_results.push(
+                result
+                    .map_err(|_| crate::Error::Unique("Failed to build project".to_owned()))??,
+            );
         }
 
         Ok(all_results)
-    }
-
-    /// Check if the build is targeting the web platform
-    pub fn targeting_web(&self) -> bool {
-        self.target_platform == TargetPlatform::Web
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct BuildResult {
-    pub executable: PathBuf,
-    pub target_platform: TargetPlatform,
-}
-
-impl BuildResult {
-    /// Open the executable if this is a native build
-    pub fn open(
-        &self,
-        serve: &ServeArguments,
-        fullstack_address: Option<SocketAddr>,
-        workspace: &std::path::Path,
-    ) -> std::io::Result<Option<Child>> {
-        if self.target_platform == TargetPlatform::Web {
-            return Ok(None);
-        }
-        if self.target_platform == TargetPlatform::Server {
-            tracing::trace!("Proxying fullstack server from port {fullstack_address:?}");
-        }
-
-        let arguments = RuntimeCLIArguments::new(serve.address.address(), fullstack_address);
-        let executable = self.executable.canonicalize()?;
-        let mut cmd = Command::new(executable);
-        cmd
-            // When building the fullstack server, we need to forward the serve arguments (like port) to the fullstack server through env vars
-            .env(
-                dioxus_cli_config::__private::SERVE_ENV,
-                serde_json::to_string(&arguments).unwrap(),
-            )
-            .stderr(Stdio::piped())
-            .stdout(Stdio::piped())
-            .kill_on_drop(true)
-            .current_dir(workspace);
-        Ok(Some(cmd.spawn()?))
     }
 }
