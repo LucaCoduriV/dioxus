@@ -451,8 +451,7 @@ impl WebviewInstance {
         )))]
         let mut webview = {
             use wry::WebViewBuilderExtUnix;
-            let vbox = window.default_vbox().unwrap();
-            WebViewBuilder::new_gtk(vbox)
+            WebViewBuilder::new_gtk(default_box.as_ref())
         };
 
         // Disable the webview default shortcuts to disable the reload shortcut
