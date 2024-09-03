@@ -1,21 +1,23 @@
 //! Launch helper macros for fullstack apps
 #![allow(clippy::new_without_default)]
 #![allow(unused)]
-use dioxus_config_macro::*;
-use std::any::Any;
-
 use crate::prelude::*;
+use dioxus_config_macro::*;
+use dioxus_desktop::gtk_window::{gtk, EventLoopWindowTarget};
+use dioxus_desktop::{Config, UserWindowEvent};
+use std::any::Any;
+use std::rc::Rc;
 
 /// A builder for a fullstack app.
 #[must_use]
 pub struct LaunchBuilder<Cfg: 'static = (), ContextFn: ?Sized = ValidContext> {
-    launch_fn: LaunchFn<Cfg, ContextFn>,
+    launch_fn: Box<LaunchFn<Cfg, ContextFn>>,
     contexts: Vec<Box<ContextFn>>,
 
     platform_config: Option<Cfg>,
 }
 
-pub type LaunchFn<Cfg, Context> = fn(fn() -> Element, Vec<Box<Context>>, Cfg);
+pub type LaunchFn<Cfg, Context> = dyn Fn(fn() -> Element, Vec<Box<Context>>, Cfg);
 
 #[cfg(any(
     feature = "fullstack",
@@ -56,7 +58,7 @@ impl LaunchBuilder {
     )]
     pub fn new() -> LaunchBuilder<current_platform::Config, ValidContext> {
         LaunchBuilder {
-            launch_fn: |root, contexts, cfg| current_platform::launch(root, contexts, cfg),
+            launch_fn: Box::new(|root, contexts, cfg| current_platform::launch(root, contexts, cfg)),
             contexts: Vec::new(),
             platform_config: None,
         }
@@ -67,7 +69,7 @@ impl LaunchBuilder {
     #[cfg_attr(docsrs, doc(cfg(feature = "web")))]
     pub fn web() -> LaunchBuilder<dioxus_web::Config, UnsendContext> {
         LaunchBuilder {
-            launch_fn: dioxus_web::launch::launch,
+            launch_fn: Box::new(dioxus_web::launch::launch),
             contexts: Vec::new(),
             platform_config: None,
         }
@@ -78,18 +80,51 @@ impl LaunchBuilder {
     #[cfg_attr(docsrs, doc(cfg(feature = "desktop")))]
     pub fn desktop() -> LaunchBuilder<dioxus_desktop::Config, UnsendContext> {
         LaunchBuilder {
-            launch_fn: |root, contexts, cfg| dioxus_desktop::launch::launch(root, contexts, cfg),
+            launch_fn: Box::new(|root, contexts, cfg| dioxus_desktop::launch::launch(root, contexts, cfg)),
             contexts: Vec::new(),
             platform_config: None,
         }
     }
 
+    #[cfg(not(any(
+        target_os = "windows",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "android"
+    )))]
+    #[cfg(feature = "desktop")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "desktop")))]
+    pub fn desktop_from_gtk_window<F>(
+        gtk_window_builder: F,
+    ) -> LaunchBuilder<dioxus_desktop::Config, UnsendContext>
+    where
+        F: Fn(
+            &EventLoopWindowTarget<UserWindowEvent>,
+        ) -> (dioxus_desktop::gtk_window::Window, Rc<gtk::Box>)
+        + Clone
+        + 'static
+        + Sized,
+    {
+        let config = Config::new_from_gtk_window();
+        LaunchBuilder {
+            launch_fn: Box::new(move |root, contexts, cfg| {
+                dioxus_desktop::launch::launch_from_gtk_window(
+                    root,
+                    contexts,
+                    cfg,
+                    gtk_window_builder.clone(),
+                )
+            }),
+            contexts: Vec::new(),
+            platform_config: Some(config),
+        }
+    }
     /// Launch your fullstack application.
     #[cfg(feature = "fullstack")]
     #[cfg_attr(docsrs, doc(cfg(feature = "fullstack")))]
     pub fn fullstack() -> LaunchBuilder<dioxus_fullstack::Config, SendContext> {
         LaunchBuilder {
-            launch_fn: |root, contexts, cfg| dioxus_fullstack::launch::launch(root, contexts, cfg),
+            launch_fn: Box::new(|root, contexts, cfg| dioxus_fullstack::launch::launch(root, contexts, cfg)),
             contexts: Vec::new(),
             platform_config: None,
         }
@@ -101,9 +136,9 @@ impl LaunchBuilder {
     pub fn static_generation() -> LaunchBuilder<dioxus_static_site_generation::Config, SendContext>
     {
         LaunchBuilder {
-            launch_fn: |root, contexts, cfg| {
+            launch_fn: Box::new(|root, contexts, cfg| {
                 dioxus_static_site_generation::launch::launch(root, contexts, cfg)
-            },
+            }),
             contexts: Vec::new(),
             platform_config: None,
         }
@@ -114,7 +149,7 @@ impl LaunchBuilder {
     #[cfg_attr(docsrs, doc(cfg(feature = "mobile")))]
     pub fn mobile() -> LaunchBuilder<dioxus_mobile::Config, UnsendContext> {
         LaunchBuilder {
-            launch_fn: |root, contexts, cfg| dioxus_mobile::launch::launch(root, contexts, cfg),
+            launch_fn: Box::new(|root, contexts, cfg| dioxus_mobile::launch::launch(root, contexts, cfg)),
             contexts: Vec::new(),
             platform_config: None,
         }
@@ -123,7 +158,7 @@ impl LaunchBuilder {
     /// Provide a custom launch function for your application.
     ///
     /// Useful for third party renderers to tap into the launch builder API without having to reimplement it.
-    pub fn custom<Cfg, List>(launch_fn: LaunchFn<Cfg, List>) -> LaunchBuilder<Cfg, List> {
+    pub fn custom<Cfg, List>(launch_fn: Box<LaunchFn<Cfg, List>>) -> LaunchBuilder<Cfg, List> {
         LaunchBuilder {
             launch_fn,
             contexts: vec![],
@@ -249,7 +284,7 @@ mod current_platform {
 
     #[cfg(all(feature = "fullstack", feature = "axum"))]
     impl TryIntoConfig<crate::launch::current_platform::Config>
-        for ::dioxus_fullstack::prelude::ServeConfigBuilder
+    for ::dioxus_fullstack::prelude::ServeConfigBuilder
     {
         fn into_config(self, config: &mut Option<crate::launch::current_platform::Config>) {
             match config {

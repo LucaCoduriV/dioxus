@@ -95,6 +95,57 @@ impl App {
         (event_loop, app)
     }
 
+    pub fn new_from_window(
+        cfg: Config,
+        virtual_dom: VirtualDom,
+    ) -> (EventLoop<UserWindowEvent>, Self) {
+        let event_loop = EventLoopBuilder::<UserWindowEvent>::with_user_event().build();
+
+        let app = Self {
+            window_behavior: WindowCloseBehaviour::CloseWindow,
+            is_visible_before_start: true,
+            webviews: HashMap::new(),
+            control_flow: ControlFlow::Wait,
+            unmounted_dom: Cell::new(Some(virtual_dom)),
+            float_all: !cfg!(debug_assertions),
+            show_devtools: false,
+            cfg: Cell::new(Some(cfg)),
+            shared: Rc::new(SharedContext {
+                event_handlers: WindowEventHandlers::default(),
+                pending_webviews: Default::default(),
+                shortcut_manager: ShortcutRegistry::new(),
+                proxy: event_loop.create_proxy(),
+                target: event_loop.clone(),
+            }),
+        };
+
+        // Set the event converter
+        dioxus_html::set_event_converter(Box::new(crate::events::SerializedHtmlEventConverter));
+
+        // Wire up the global hotkey handler
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+        app.set_global_hotkey_handler();
+
+        // Wire up the menubar receiver - this way any component can key into the menubar actions
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+        app.set_menubar_receiver();
+
+        // Allow hotreloading to work - but only in debug mode
+        #[cfg(all(
+            feature = "hot-reload",
+            debug_assertions,
+            not(target_os = "android"),
+            not(target_os = "ios")
+        ))]
+        app.connect_hotreload();
+
+        #[cfg(debug_assertions)]
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+        app.connect_preserve_window_state_handler();
+
+        (event_loop, app)
+    }
+
     pub fn tick(&mut self, window_event: &Event<'_, UserWindowEvent>) {
         self.control_flow = ControlFlow::Wait;
         self.shared
@@ -195,10 +246,39 @@ impl App {
         let virtual_dom = self.unmounted_dom.take().unwrap();
         let mut cfg = self.cfg.take().unwrap();
 
-        self.is_visible_before_start = cfg.window.window.visible;
-        cfg.window = cfg.window.with_visible(false);
+        self.is_visible_before_start = cfg
+            .window
+            .as_ref()
+            .map(|w| w.window.visible)
+            .unwrap_or(true);
+        cfg.window = cfg.window.map(|w| w.with_visible(false));
 
         let webview = WebviewInstance::new(cfg, virtual_dom, self.shared.clone());
+
+        // And then attempt to resume from state
+        #[cfg(debug_assertions)]
+        self.resume_from_state(&webview);
+
+        let id = webview.desktop_context.window.id();
+        self.webviews.insert(id, webview);
+    }
+
+    pub fn handle_start_cause_init_from_gtk_window<F>(&mut self, gtk_window_builder: F)
+    where
+        F: Fn(&EventLoopWindowTarget<UserWindowEvent>) -> (tao::window::Window, Rc<gtk::Box>)
+            + Clone
+            + 'static,
+    {
+        let virtual_dom = self.unmounted_dom.take().unwrap();
+        let cfg = self.cfg.take().unwrap();
+        self.is_visible_before_start = true;
+
+        let webview = WebviewInstance::new_in_gtk_window(
+            cfg,
+            virtual_dom,
+            self.shared.clone(),
+            gtk_window_builder,
+        );
 
         // And then attempt to resume from state
         #[cfg(debug_assertions)]

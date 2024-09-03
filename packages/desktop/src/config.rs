@@ -36,7 +36,7 @@ impl From<MenuBuilderState> for Option<DioxusMenu> {
 
 /// The configuration for the desktop application.
 pub struct Config {
-    pub(crate) window: WindowBuilder,
+    pub(crate) window: Option<WindowBuilder>,
     pub(crate) menu: MenuBuilderState,
     pub(crate) protocols: Vec<WryProtocol>,
     pub(crate) asynchronous_protocols: Vec<AsyncWryProtocol>,
@@ -85,7 +85,27 @@ impl Config {
         }
 
         Self {
-            window,
+            window: Some(window),
+            menu: MenuBuilderState::Unset,
+            protocols: Vec::new(),
+            asynchronous_protocols: Vec::new(),
+            pre_rendered: None,
+            disable_context_menu: !cfg!(debug_assertions),
+            resource_dir: None,
+            data_dir: None,
+            custom_head: None,
+            custom_index: None,
+            root_name: "main".to_string(),
+            background_color: None,
+            last_window_close_behavior: WindowCloseBehaviour::LastWindowExitsApp,
+        }
+    }
+
+    /// Initializes a new `Config` with no tao WindowBuilder.
+    /// Use this function if you want to create your own gtk window
+    pub fn new_from_gtk_window() -> Self {
+        Self {
+            window: None,
             menu: MenuBuilderState::Unset,
             protocols: Vec::new(),
             asynchronous_protocols: Vec::new(),
@@ -130,9 +150,9 @@ impl Config {
     /// Set the configuration for the window.
     pub fn with_window(mut self, window: WindowBuilder) -> Self {
         // We need to do a swap because the window builder only takes itself as muy self
-        self.window = window;
+        self.window = Some(window);
         // If the decorations are off for the window, remove the menu as well
-        if !self.window.window.decorations && matches!(self.menu, MenuBuilderState::Unset) {
+        if !self.window.as_ref().unwrap().window.decorations && matches!(self.menu, MenuBuilderState::Unset) {
             self.menu = MenuBuilderState::Set(None);
         }
         self
@@ -190,7 +210,7 @@ impl Config {
 
     /// Set a custom icon for this application
     pub fn with_icon(mut self, icon: Icon) -> Self {
-        self.window.window.window_icon = Some(icon);
+        self.window.as_mut().expect("Window builder is missing").window.window_icon = Some(icon);
         self
     }
 
@@ -238,7 +258,7 @@ impl Config {
     pub fn with_menu(mut self, menu: impl Into<Option<DioxusMenu>>) -> Self {
         #[cfg(not(any(target_os = "ios", target_os = "android")))]
         {
-            if self.window.window.decorations {
+            if self.window.as_mut().expect("Window builder is missing").window.decorations {
                 self.menu = MenuBuilderState::Set(menu.into())
             }
         }

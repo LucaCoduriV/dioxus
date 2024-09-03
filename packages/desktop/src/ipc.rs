@@ -3,19 +3,26 @@ use tao::window::WindowId;
 
 #[non_exhaustive]
 #[derive(Debug, Clone)]
+/// Events emitted by the window
 pub enum UserWindowEvent {
     /// A global hotkey event
     #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     GlobalHotKeyEvent(global_hotkey::GlobalHotKeyEvent),
 
     #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    /// MudaMenu event
     MudaMenuEvent(muda::MenuEvent),
 
     /// Poll the virtualdom
     Poll(WindowId),
 
     /// Handle an ipc message eminating from the window.postMessage of a given webview
-    Ipc { id: WindowId, msg: IpcMessage },
+    Ipc {
+        /// Window id
+        id: WindowId,
+        /// The ipc message sended
+        msg: IpcMessage,
+    },
 
     /// Handle a hotreload event, basically telling us to update our templates
     #[cfg(all(feature = "devtools", debug_assertions))]

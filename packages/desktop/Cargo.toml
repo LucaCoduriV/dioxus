@@ -44,6 +44,7 @@ slab = { workspace = true }
 rustc-hash = { workspace = true }
 dioxus-hooks = { workspace = true }
 futures-util = { workspace = true }
+gtk = { version = "0.18", features = ["v3_24"] }
 
 webbrowser = { workspace = true }
 infer = { workspace = true }

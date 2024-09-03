@@ -14,6 +14,9 @@ use futures_util::{pin_mut, FutureExt};
 use std::cell::OnceCell;
 use std::sync::Arc;
 use std::{rc::Rc, task::Waker};
+use tao::event_loop::EventLoopWindowTarget;
+use tao::platform::unix::WindowExtUnix;
+use tao::window::Window;
 use wry::{RequestAsyncResponder, WebContext, WebViewBuilder};
 
 #[derive(Clone)]
@@ -142,7 +145,7 @@ impl WebviewInstance {
         dom: VirtualDom,
         shared: Rc<SharedContext>,
     ) -> WebviewInstance {
-        let mut window = cfg.window.clone();
+        let mut window_builder = cfg.window.clone().expect("Window builder missing");
 
         // tao makes small windows for some reason, make them bigger on desktop
         //
@@ -152,14 +155,15 @@ impl WebviewInstance {
         // todo: move this to our launch function that's different for desktop and mobile
         #[cfg(not(any(target_os = "ios", target_os = "android")))]
         {
-            if cfg.window.window.inner_size.is_none() {
-                window = window.with_inner_size(tao::dpi::LogicalSize::new(800.0, 600.0));
+            if cfg.window.as_ref().unwrap().window.inner_size.is_none() {
+                window_builder =
+                    window_builder.with_inner_size(tao::dpi::LogicalSize::new(800.0, 600.0));
             }
         }
 
         // We assume that if the icon is None in cfg, then the user just didnt set it
-        if cfg.window.window.window_icon.is_none() {
-            window = window.with_window_icon(Some(
+        if window_builder.window.window_icon.is_none() {
+            window_builder = window_builder.with_window_icon(Some(
                 tao::window::Icon::from_rgba(
                     include_bytes!("./assets/default_icon.bin").to_vec(),
                     460,
@@ -169,7 +173,7 @@ impl WebviewInstance {
             ));
         }
 
-        let window = window.build(&shared.target).unwrap();
+        let window = cfg.window.clone().unwrap().build(&shared.target).unwrap();
 
         // https://developer.apple.com/documentation/appkit/nswindowcollectionbehavior/nswindowcollectionbehaviormanaged
         #[cfg(target_os = "macos")]
@@ -190,7 +194,7 @@ impl WebviewInstance {
         let asset_handlers = AssetHandlers::new();
         let edits = WebviewEdits::new(dom.runtime(), edit_queue.clone());
         let file_hover = NativeFileHover::default();
-        let headless = !cfg.window.window.visible;
+        let headless = !window_builder.window.visible;
 
         let request_handler = {
             to_owned![
@@ -251,7 +255,6 @@ impl WebviewInstance {
             target_os = "android"
         )))]
         let mut webview = {
-            use tao::platform::unix::WindowExtUnix;
             use wry::WebViewBuilderExtUnix;
             let vbox = window.default_vbox().unwrap();
             WebViewBuilder::new_gtk(vbox)
@@ -265,7 +268,7 @@ impl WebviewInstance {
         }
 
         webview = webview
-            .with_transparent(cfg.window.window.transparent)
+            .with_transparent(window_builder.window.transparent)
             .with_url("dioxus://index.html/")
             .with_ipc_handler(ipc_handler)
             .with_navigation_handler(|var| {
@@ -355,6 +358,215 @@ impl WebviewInstance {
             _menu: menu,
             _web_context: web_context,
         }
+    }
+
+    pub(crate) fn new_with_gtk_window<
+        F: Fn(&EventLoopWindowTarget<UserWindowEvent>) -> (Window, Rc<gtk::Box>),
+    >(
+        mut cfg: Config,
+        dom: VirtualDom,
+        shared: Rc<SharedContext>,
+        window_builder: F,
+    ) -> WebviewInstance {
+        let (window, default_box) = window_builder(&shared.target);
+
+        // https://developer.apple.com/documentation/appkit/nswindowcollectionbehavior/nswindowcollectionbehaviormanaged
+        #[cfg(target_os = "macos")]
+        {
+            use cocoa::appkit::NSWindowCollectionBehavior;
+            use cocoa::base::id;
+            use objc::{msg_send, sel, sel_impl};
+            use tao::platform::macos::WindowExtMacOS;
+
+            unsafe {
+                let window: id = window.ns_window() as id;
+                let _: () = msg_send![window, setCollectionBehavior: NSWindowCollectionBehavior::NSWindowCollectionBehaviorManaged];
+            }
+        }
+
+        let mut web_context = WebContext::new(cfg.data_dir.clone());
+        let edit_queue = WryQueue::default();
+        let asset_handlers = AssetHandlers::new();
+        let edits = WebviewEdits::new(dom.runtime(), edit_queue.clone());
+        let file_hover = NativeFileHover::default();
+        let headless = true;
+
+        let request_handler = {
+            to_owned![
+                cfg.custom_head,
+                cfg.custom_index,
+                cfg.root_name,
+                asset_handlers,
+                edits
+            ];
+            move |request, responder: RequestAsyncResponder| {
+                protocol::desktop_handler(
+                    request,
+                    asset_handlers.clone(),
+                    responder,
+                    &edits,
+                    custom_head.clone(),
+                    custom_index.clone(),
+                    &root_name,
+                    headless,
+                )
+            }
+        };
+
+        let ipc_handler = {
+            let window_id = window.id();
+            to_owned![shared.proxy];
+            move |payload: wry::http::Request<String>| {
+                // defer the event to the main thread
+                let body = payload.into_body();
+                if let Ok(msg) = serde_json::from_str(&body) {
+                    _ = proxy.send_event(UserWindowEvent::Ipc { id: window_id, msg });
+                }
+            }
+        };
+
+        let file_drop_handler = {
+            to_owned![file_hover];
+            move |evt| {
+                // Update the most recent file drop event - when the event comes in from the webview we can use the
+                // most recent event to build a new event with the files in it.
+                file_hover.set(evt);
+                false
+            }
+        };
+
+        #[cfg(any(
+            target_os = "windows",
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "android"
+        ))]
+        let mut webview = WebViewBuilder::new(&window);
+
+        #[cfg(not(any(
+            target_os = "windows",
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "android"
+        )))]
+        let mut webview = {
+            use wry::WebViewBuilderExtUnix;
+            let vbox = window.default_vbox().unwrap();
+            WebViewBuilder::new_gtk(vbox)
+        };
+
+        // Disable the webview default shortcuts to disable the reload shortcut
+        #[cfg(target_os = "windows")]
+        {
+            use wry::WebViewBuilderExtWindows;
+            webview = webview.with_browser_accelerator_keys(false);
+        }
+
+        webview = webview
+            .with_transparent(true)
+            .with_url("dioxus://index.html/")
+            .with_ipc_handler(ipc_handler)
+            .with_navigation_handler(|var| {
+                // We don't want to allow any navigation
+                // We only want to serve the index file and assets
+                if var.starts_with("dioxus://") || var.starts_with("http://dioxus.") {
+                    true
+                } else {
+                    if var.starts_with("http://") || var.starts_with("https://") {
+                        _ = webbrowser::open(&var);
+                    }
+                    false
+                }
+            }) // prevent all navigations
+            .with_asynchronous_custom_protocol(String::from("dioxus"), request_handler)
+            .with_web_context(&mut web_context)
+            .with_drag_drop_handler(file_drop_handler);
+
+        if let Some(color) = cfg.background_color {
+            webview = webview.with_background_color(color);
+        }
+
+        for (name, handler) in cfg.protocols.drain(..) {
+            webview = webview.with_custom_protocol(name, handler);
+        }
+
+        for (name, handler) in cfg.asynchronous_protocols.drain(..) {
+            webview = webview.with_asynchronous_custom_protocol(name, handler);
+        }
+
+        const INITIALIZATION_SCRIPT: &str = r#"
+        if (document.addEventListener) {
+            document.addEventListener('contextmenu', function(e) {
+                e.preventDefault();
+            }, false);
+        } else {
+            document.attachEvent('oncontextmenu', function() {
+                window.event.returnValue = false;
+            });
+        }
+        "#;
+
+        if cfg.disable_context_menu {
+            // in release mode, we don't want to show the dev tool or reload menus
+            webview = webview.with_initialization_script(INITIALIZATION_SCRIPT)
+        } else {
+            // in debug, we are okay with the reload menu showing and dev tool
+            webview = webview.with_devtools(true);
+        }
+
+        let webview = webview.build().unwrap();
+
+        let menu = if cfg!(not(any(target_os = "android", target_os = "ios"))) {
+            let menu_option = cfg.menu.into();
+            if let Some(menu) = &menu_option {
+                crate::menubar::init_menu_bar(menu, &window);
+            }
+            menu_option
+        } else {
+            None
+        };
+
+        // The context will function as both the document and the context provider
+        // But we need to disambiguate the types for rust's TypeId to downcast Rc<dyn Document> properly
+        let desktop_context = Rc::from(DesktopService::new(
+            webview,
+            window,
+            shared.clone(),
+            asset_handlers,
+            file_hover,
+        ));
+        let as_document: Rc<dyn Document> = desktop_context.clone() as Rc<dyn Document>;
+
+        // Provide the desktop context to the virtual dom and edit handler
+        edits.set_desktop_context(desktop_context.clone());
+
+        dom.in_runtime(|| {
+            ScopeId::ROOT.provide_context(desktop_context.clone());
+            ScopeId::ROOT.provide_context(as_document);
+        });
+
+        WebviewInstance {
+            dom,
+            edits,
+            waker: tao_waker(shared.proxy.clone(), desktop_context.window.id()),
+            desktop_context,
+            _menu: menu,
+            _web_context: web_context,
+        }
+    }
+
+    pub(crate) fn new_in_gtk_window<F>(
+        cfg: Config,
+        dom: VirtualDom,
+        shared: Rc<SharedContext>,
+        gtk_window_builder: F,
+    ) -> WebviewInstance
+    where
+        F: Fn(&EventLoopWindowTarget<UserWindowEvent>) -> (tao::window::Window, Rc<gtk::Box>)
+            + Clone
+            + 'static,
+    {
+        Self::new_with_gtk_window(cfg, dom, shared, gtk_window_builder)
     }
 
     pub fn poll_vdom(&mut self) {
